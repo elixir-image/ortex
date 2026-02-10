@@ -79,9 +79,9 @@ defimpl Inspect, for: Ortex.Model do
           concat([
             color("#Ortex.Model<", :map, inspect_opts),
             line(),
-            nest(concat(["  inputs: ", Inspect.List.inspect(inputs, inspect_opts)]), 2),
+            nest(concat(["  inputs: ", Inspect.Algebra.to_doc(inputs, inspect_opts)]), 2),
             line(),
-            nest(concat(["  outputs: ", Inspect.List.inspect(outputs, inspect_opts)]), 2),
+            nest(concat(["  outputs: ", Inspect.Algebra.to_doc(outputs, inspect_opts)]), 2),
             color(">", :map, inspect_opts)
           ])
         )
