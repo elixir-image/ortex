@@ -1,8 +1,15 @@
 defmodule Ortex.MixProject do
   use Mix.Project
 
-  @version "0.1.11"
-  @source_url "https://github.com/elixir-nx/ortex"
+  # NOTE: while testing precompiled NIFs from this fork, both @version
+  # and @source_url must match exactly what's published. RustlerPrecompiled
+  # constructs the artifact download URL as
+  # `<@source_url>/releases/download/v<@version>/<artifact-name>`
+  # at consumer compile time. The git tag must be `v<@version>` literally.
+  # When upstreaming to elixir-nx/ortex, revert @source_url to the upstream
+  # URL and bump @version to whatever the next upstream release should be.
+  @version "0.1.11-pre4"
+  @source_url "https://github.com/elixir-image/ortex"
 
   def project do
     [
