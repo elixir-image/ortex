@@ -43,9 +43,9 @@ jobs:
           # See https://github.com/actions/runner-images/issues/13045.
           - { target: x86_64-apple-darwin, os: macos-15-intel }
           # Linux x86_64. Built on ubuntu-22.04 — produces a binary
-          # that requires glibc >= 2.35. See the comment below about
-          # tightening this with a manylinux container if older distro
-          # support becomes a goal.
+          # that requires glibc >= 2.35. Could be moved to a
+          # manylinux2014 container if older-distro support becomes
+          # a goal.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
           # Linux ARM64 via cross-rs (cross-compiled from x86_64 runner).
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, use-cross: true }
@@ -73,151 +73,35 @@ jobs:
         with:
           targets: ${{ matrix.job.target }}
 
-      - name: Install cross (Linux ARM64)
-        if: matrix.job.use-cross
-        shell: bash
-        run: cargo install --git https://github.com/cross-rs/cross --tag v0.2.5 cross
-
-      # Build the NIF directly with cargo. With the rust-toolchain
-      # action's stable rustc, the `ort` 2.0.0-rc.x crate links
-      # onnxruntime statically into the NIF on every platform — the
-      # output is a single self-contained shared library (~20-25 MB).
-      # No `libonnxruntime` sidecar exists in target/release/ or
-      # anywhere else on disk after this step; the packaging step
-      # below correctly produces a single-file tarball as a result.
+      # `philss/rustler-precompiled-action` is the standard build +
+      # package step used by every rustler_precompiled crate
+      # (Tokenizers, Polars, Explorer, ...). It runs cargo (or cross
+      # for Linux ARM64), then tarballs the resulting NIF with the
+      # naming convention RustlerPrecompiled expects on the consumer
+      # side. With ort 2.0.0-rc.x and stable rustc onnxruntime is
+      # statically linked into the NIF, so the single-file tarball
+      # the action produces is the complete artifact.
       - name: Build NIF
-        shell: bash
-        working-directory: native/ortex
-        env:
-          RUSTLER_NIF_VERSION: ${{ matrix.nif }}
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.job.use-cross }}" = "true" ]; then
-            # Cross-compilation needs explicit --target. Output goes
-            # to target/<triple>/release/.
-            cross build --release --target "${{ matrix.job.target }}"
-          else
-            # Native build. The runner's host arch matches
-            # matrix.job.target by design, so default cargo behaviour
-            # produces the right binary. Output goes to target/release/.
-            cargo build --release
-          fi
-
-      # Stage the right files into a tarball matching RustlerPrecompiled's
-      # expected layout. Naming and contents follow the conventions in
-      # rustler_precompiled.ex (lib_name_with_ext/2 + lib_prefix/1):
-      #
-      #   * Tarball name: lib<crate>-v<ver>-nif-<nif>-<target>.so.tar.gz
-      #     on Linux/macOS, <crate>-v<ver>-nif-<nif>-<target>.dll.tar.gz
-      #     on Windows. macOS keeps the .so suffix even though the NIF
-      #     is a Mach-O dylib — RustlerPrecompiled normalises on .so.
-      #
-      #   * Top-level files in the tarball: the renamed NIF, plus any
-      #     libonnxruntime sidecars cargo produced. With the current
-      #     `ort 2.0.0-rc.x` build under stable rustc, onnxruntime is
-      #     statically linked on every platform, so the sidecar loop
-      #     finds nothing and the tarball is single-file. The loop
-      #     still runs as forward compatibility — if a future ort
-      #     version reverts to dynamic linking we'll auto-bundle the
-      #     runtime alongside the NIF without code changes.
-      #
-      # The loop deliberately EXCLUDES libonnxruntime_providers_cuda
-      # and ..._tensorrt — those are >450 MB and only useful with
-      # the matching cargo features enabled. CPU-only is the default
-      # precompile target; GPU users opt into source build via
-      # ORTEX_BUILD=true.
-      - name: Package artifact
-        id: pkg
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TARGET: ${{ matrix.job.target }}
-          NIF: ${{ matrix.nif }}
-        run: |
-          set -euo pipefail
-
-          case "$TARGET" in
-            *-pc-windows-msvc|*-pc-windows-gnu)
-              prefix=""
-              nif_src_ext="dll"
-              tarball_ext="dll"
-              runtime_ext="dll"
-              ;;
-            *-apple-darwin)
-              prefix="lib"
-              nif_src_ext="dylib"
-              tarball_ext="so"
-              runtime_ext="dylib"
-              ;;
-            *-unknown-linux-*)
-              prefix="lib"
-              nif_src_ext="so"
-              tarball_ext="so"
-              runtime_ext="so"
-              ;;
-            *)
-              echo "Unsupported target: $TARGET" >&2
-              exit 1
-              ;;
-          esac
-
-          NAME="${prefix}ortex-v${VERSION}-nif-${NIF}-${TARGET}"
-          TARBALL="${NAME}.${tarball_ext}.tar.gz"
-
-          # Build output location depends on whether --target was used.
-          # Native builds (cargo build --release) land in target/release/.
-          # Cross builds (cross build --release --target X) land in
-          # target/<X>/release/. The "Build NIF" step controls which.
-          if [ "${{ matrix.job.use-cross }}" = "true" ]; then
-            BUILD_DIR="native/ortex/target/${TARGET}/release"
-          else
-            BUILD_DIR="native/ortex/target/release"
-          fi
-
-          mkdir -p pkg
-          cd pkg
-          rm -f -- *
-
-          # Copy the NIF, renaming to the long versioned filename
-          # RustlerPrecompiled expects. -L follows symlinks (cargo
-          # sometimes leaves the .so as a symlink into deps/).
-          cp -L "../${BUILD_DIR}/${prefix}ortex.${nif_src_ext}" "${NAME}.${tarball_ext}"
-
-          # Bundle libonnxruntime sidecars if present. Exclude GPU
-          # provider libraries (huge; not used by CPU-only NIFs).
-          shopt -s nullglob
-          for src in "../${BUILD_DIR}/${prefix}onnxruntime"*."${runtime_ext}"*; do
-            base="$(basename "$src")"
-            case "$base" in
-              *providers_cuda*|*providers_tensorrt*)
-                echo "Excluding GPU provider library: $base"
-                ;;
-              *)
-                echo "Bundling: $base"
-                cp -L "$src" "$base"
-                ;;
-            esac
-          done
-
-          tar -czf "$TARBALL" -- *
-
-          echo "=== Final tarball contents ==="
-          tar -tzvf "$TARBALL"
-          echo "=== Tarball size ==="
-          ls -lh "$TARBALL"
-
-          echo "tarball=pkg/${TARBALL}" >> "$GITHUB_OUTPUT"
-          echo "tarball-name=${TARBALL}" >> "$GITHUB_OUTPUT"
+        id: build-crate
+        uses: philss/rustler-precompiled-action@v1.1.5
+        with:
+          project-name: ortex
+          project-version: ${{ steps.version.outputs.version }}
+          target: ${{ matrix.job.target }}
+          nif-version: ${{ matrix.nif }}
+          use-cross: ${{ matrix.job.use-cross }}
+          project-dir: "native/ortex"
 
       - name: Upload artifact (workflow run)
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.pkg.outputs.tarball-name }}
-          path: ${{ steps.pkg.outputs.tarball }}
+          name: ${{ steps.build-crate.outputs.file-name }}
+          path: ${{ steps.build-crate.outputs.file-path }}
 
       - name: Attach to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           draft: true
-          files: ${{ steps.pkg.outputs.tarball }}
+          files: ${{ steps.build-crate.outputs.file-path }}
+
