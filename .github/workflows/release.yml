@@ -30,8 +30,11 @@ jobs:
         job:
           # Apple Silicon. macos-14 runners are arm64 natively.
           - { target: aarch64-apple-darwin, os: macos-14 }
-          # Intel Mac. macos-13 is the last Intel-native runner image.
-          - { target: x86_64-apple-darwin, os: macos-13 }
+          # Intel Mac. macos-13 was retired by GitHub on Dec 4 2025;
+          # macos-15-intel is the replacement and is the last available
+          # Intel-architecture macOS runner (supported through Aug 2027).
+          # See https://github.com/actions/runner-images/issues/13045.
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
           # Linux x86_64. Built on ubuntu-22.04 — produces a binary
           # that requires glibc >= 2.35. See the comment below about
           # tightening this with a manylinux container if older distro
