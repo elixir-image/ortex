@@ -26,23 +26,6 @@ jobs:
         run: mix deps.get
       - name: Compile and check warnings
         run: mix compile --warnings-as-errors
-      - name: Locate libonnxruntime artifacts (diagnostic)
-        # The ort Rust crate downloads libonnxruntime during cargo build.
-        # On Linux the NIF dynamically links against it and Ortex.Util
-        # copies it into priv/native/ so the rpath ($ORIGIN) can find it.
-        # When that copy fails, the NIF fails to dlopen at test time. This
-        # diagnostic step prints every libonnxruntime location in the
-        # workspace so we can verify both sides.
-        run: |
-          echo "=== libonnxruntime files in workspace ==="
-          find "$GITHUB_WORKSPACE" -name 'libonnxruntime*' -printf '%p (%s bytes)\n' 2>/dev/null || \
-            find "$GITHUB_WORKSPACE" -name 'libonnxruntime*' -exec ls -la {} \;
-          echo
-          echo "=== priv/native contents ==="
-          ls -la _build/test/lib/ortex/priv/native/ || true
-          echo
-          echo "=== ldd on the loaded NIF ==="
-          ldd _build/test/lib/ortex/priv/native/ortex.so || true
       - name: Check formatting
         run: mix format --check-formatted
       - name: Run tests

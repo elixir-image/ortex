@@ -71,12 +71,13 @@ jobs:
         shell: bash
         run: cargo install --git https://github.com/cross-rs/cross --tag v0.2.5 cross
 
-      # Build the NIF directly with cargo. The `ort` crate downloads
-      # onnxruntime during this step. On macOS the runtime is linked
-      # statically into the NIF (no sidecar needed). On Linux and
-      # Windows it remains a separate shared library and must travel
-      # in the tarball alongside the NIF — that's the packaging step
-      # below.
+      # Build the NIF directly with cargo. With the rust-toolchain
+      # action's stable rustc, the `ort` 2.0.0-rc.x crate links
+      # onnxruntime statically into the NIF on every platform — the
+      # output is a single self-contained shared library (~20-25 MB).
+      # No `libonnxruntime` sidecar exists in target/release/ or
+      # anywhere else on disk after this step; the packaging step
+      # below correctly produces a single-file tarball as a result.
       - name: Build NIF
         shell: bash
         working-directory: native/ortex
@@ -85,78 +86,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.job.use-cross }}" = "true" ]; then
-            # Cross-compilation: pass --target explicitly. Output goes
-            # to target/<triple>/release/. Note: cross runs cargo inside
-            # a Docker container, so libonnxruntime artifacts may not
-            # surface on the host filesystem — see comment in the
-            # packaging step below.
+            # Cross-compilation needs explicit --target. Output goes
+            # to target/<triple>/release/.
             cross build --release --target "${{ matrix.job.target }}"
           else
-            # Native build: omit --target. The runner's host arch
-            # matches matrix.job.target by design, so the default cargo
-            # target produces the right binary. Crucially, omitting
-            # --target also makes the `ort` crate's build script stage
-            # libonnxruntime symlinks in target/release/ — those
-            # symlinks are skipped when --target is explicit, leaving
-            # the runtime libraries only in `~/.cache/ort/`. The
-            # packaging step needs the symlinks to bundle the runtime
-            # alongside the NIF.
+            # Native build. The runner's host arch matches
+            # matrix.job.target by design, so default cargo behaviour
+            # produces the right binary. Output goes to target/release/.
             cargo build --release
           fi
-
-      # Diagnostic: print every libonnxruntime / onnxruntime file in
-      # the workspace and the user-level ort cache so we can verify
-      # where cargo + the `ort` crate placed them. Remove this step
-      # once the layout is well-understood and bundling is verified.
-      - name: Locate onnxruntime artifacts (diagnostic)
-        shell: bash
-        run: |
-          set +e
-          echo "=== onnxruntime files in workspace ==="
-          if find --version >/dev/null 2>&1; then
-            find "$GITHUB_WORKSPACE" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) \
-              -printf '%p (%s bytes, type=%y)\n' 2>/dev/null
-          else
-            find "$GITHUB_WORKSPACE" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) \
-              -exec ls -la {} \;
-          fi
-          echo
-          echo "=== onnxruntime files in ort user cache ==="
-          # The `ort` crate's default download strategy stages prebuilt
-          # onnxruntime under the user cache. Locations vary by OS.
-          for d in "$HOME/.cache/ort" "$HOME/Library/Caches/ort" "$LOCALAPPDATA/ort" "$USERPROFILE/AppData/Local/ort"; do
-            [ -d "$d" ] || continue
-            echo "-- $d --"
-            find "$d" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) 2>/dev/null
-          done
-          echo
-          echo "=== native build dir listing (target/release/) ==="
-          ls -la native/ortex/target/release/ 2>&1 || echo "(does not exist — cross build)"
-          echo
-          echo "=== cross build dir listing (target/<triple>/release/) ==="
-          ls -la "native/ortex/target/${{ matrix.job.target }}/release/" 2>&1 || \
-            echo "(does not exist — native build)"
-          echo
-          echo "=== NIF dynamic dependencies ==="
-          # If `libonnxruntime` appears here, the NIF was dynamically
-          # linked and we MUST bundle the runtime in the tarball.
-          # If it's absent, onnxruntime is statically linked into the
-          # NIF and the artifact ships as a single file.
-          for d in native/ortex/target/release native/ortex/target/${{ matrix.job.target }}/release; do
-            for f in "$d"/libortex.so "$d"/libortex.dylib "$d"/ortex.dll; do
-              [ -e "$f" ] || continue
-              echo "-- $f --"
-              if command -v ldd >/dev/null 2>&1; then
-                ldd "$f" 2>&1 || true
-              elif command -v otool >/dev/null 2>&1; then
-                otool -L "$f" 2>&1 || true
-              elif command -v dumpbin >/dev/null 2>&1; then
-                dumpbin /dependents "$f" 2>&1 || true
-              else
-                echo "(no dependency tool available)"
-              fi
-            done
-          done
 
       # Stage the right files into a tarball matching RustlerPrecompiled's
       # expected layout. Naming and contents follow the conventions in
@@ -168,15 +106,19 @@ jobs:
       #     is a Mach-O dylib — RustlerPrecompiled normalises on .so.
       #
       #   * Top-level files in the tarball: the renamed NIF, plus any
-      #     libonnxruntime sidecars cargo produced. We deliberately
-      #     EXCLUDE libonnxruntime_providers_cuda and ..._tensorrt —
-      #     those are >450 MB and only useful with the matching cargo
-      #     features enabled. CPU-only is the default precompile target;
-      #     GPU users opt into source build via ORTEX_BUILD=true.
+      #     libonnxruntime sidecars cargo produced. With the current
+      #     `ort 2.0.0-rc.x` build under stable rustc, onnxruntime is
+      #     statically linked on every platform, so the sidecar loop
+      #     finds nothing and the tarball is single-file. The loop
+      #     still runs as forward compatibility — if a future ort
+      #     version reverts to dynamic linking we'll auto-bundle the
+      #     runtime alongside the NIF without code changes.
       #
-      # On macOS the libonnxruntime files don't exist (statically
-      # linked), so the loop adds nothing and the tarball ends up with
-      # a single file. That's the correct shape for static builds.
+      # The loop deliberately EXCLUDES libonnxruntime_providers_cuda
+      # and ..._tensorrt — those are >450 MB and only useful with
+      # the matching cargo features enabled. CPU-only is the default
+      # precompile target; GPU users opt into source build via
+      # ORTEX_BUILD=true.
       - name: Package artifact
         id: pkg
         shell: bash
