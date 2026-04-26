@@ -136,6 +136,27 @@ jobs:
           echo "=== cross build dir listing (target/<triple>/release/) ==="
           ls -la "native/ortex/target/${{ matrix.job.target }}/release/" 2>&1 || \
             echo "(does not exist — native build)"
+          echo
+          echo "=== NIF dynamic dependencies ==="
+          # If `libonnxruntime` appears here, the NIF was dynamically
+          # linked and we MUST bundle the runtime in the tarball.
+          # If it's absent, onnxruntime is statically linked into the
+          # NIF and the artifact ships as a single file.
+          for d in native/ortex/target/release native/ortex/target/${{ matrix.job.target }}/release; do
+            for f in "$d"/libortex.so "$d"/libortex.dylib "$d"/ortex.dll; do
+              [ -e "$f" ] || continue
+              echo "-- $f --"
+              if command -v ldd >/dev/null 2>&1; then
+                ldd "$f" 2>&1 || true
+              elif command -v otool >/dev/null 2>&1; then
+                otool -L "$f" 2>&1 || true
+              elif command -v dumpbin >/dev/null 2>&1; then
+                dumpbin /dependents "$f" 2>&1 || true
+              else
+                echo "(no dependency tool available)"
+              fi
+            done
+          done
 
       # Stage the right files into a tarball matching RustlerPrecompiled's
       # expected layout. Naming and contents follow the conventions in
