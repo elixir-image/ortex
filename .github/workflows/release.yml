@@ -85,25 +85,34 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.job.use-cross }}" = "true" ]; then
+            # Cross-compilation: pass --target explicitly. Output goes
+            # to target/<triple>/release/. Note: cross runs cargo inside
+            # a Docker container, so libonnxruntime artifacts may not
+            # surface on the host filesystem — see comment in the
+            # packaging step below.
             cross build --release --target "${{ matrix.job.target }}"
           else
-            cargo build --release --target "${{ matrix.job.target }}"
+            # Native build: omit --target. The runner's host arch
+            # matches matrix.job.target by design, so the default cargo
+            # target produces the right binary. Crucially, omitting
+            # --target also makes the `ort` crate's build script stage
+            # libonnxruntime symlinks in target/release/ — those
+            # symlinks are skipped when --target is explicit, leaving
+            # the runtime libraries only in `~/.cache/ort/`. The
+            # packaging step needs the symlinks to bundle the runtime
+            # alongside the NIF.
+            cargo build --release
           fi
 
       # Diagnostic: print every libonnxruntime / onnxruntime file in
-      # the workspace so we can verify what cargo + the ort crate
-      # actually produced for this target. This is *only* informational
-      # — the packaging step below globs for them based on platform
-      # convention, but if the crate stages them somewhere unusual
-      # we'll see it here. Remove once the layout is well-understood.
+      # the workspace and the user-level ort cache so we can verify
+      # where cargo + the `ort` crate placed them. Remove this step
+      # once the layout is well-understood and bundling is verified.
       - name: Locate onnxruntime artifacts (diagnostic)
         shell: bash
         run: |
           set +e
           echo "=== onnxruntime files in workspace ==="
-          # Use -E to avoid breaking on weird filenames; size in bytes,
-          # and dereferenced size for symlinks (with %L). Fall back to
-          # plain ls if find -printf isn't available (e.g. Windows-bash).
           if find --version >/dev/null 2>&1; then
             find "$GITHUB_WORKSPACE" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) \
               -printf '%p (%s bytes, type=%y)\n' 2>/dev/null
@@ -112,8 +121,21 @@ jobs:
               -exec ls -la {} \;
           fi
           echo
-          echo "=== build dir listing for the target ==="
-          ls -la "native/ortex/target/${{ matrix.job.target }}/release/" 2>&1 || true
+          echo "=== onnxruntime files in ort user cache ==="
+          # The `ort` crate's default download strategy stages prebuilt
+          # onnxruntime under the user cache. Locations vary by OS.
+          for d in "$HOME/.cache/ort" "$HOME/Library/Caches/ort" "$LOCALAPPDATA/ort" "$USERPROFILE/AppData/Local/ort"; do
+            [ -d "$d" ] || continue
+            echo "-- $d --"
+            find "$d" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) 2>/dev/null
+          done
+          echo
+          echo "=== native build dir listing (target/release/) ==="
+          ls -la native/ortex/target/release/ 2>&1 || echo "(does not exist — cross build)"
+          echo
+          echo "=== cross build dir listing (target/<triple>/release/) ==="
+          ls -la "native/ortex/target/${{ matrix.job.target }}/release/" 2>&1 || \
+            echo "(does not exist — native build)"
 
       # Stage the right files into a tarball matching RustlerPrecompiled's
       # expected layout. Naming and contents follow the conventions in
@@ -171,7 +193,16 @@ jobs:
 
           NAME="${prefix}ortex-v${VERSION}-nif-${NIF}-${TARGET}"
           TARBALL="${NAME}.${tarball_ext}.tar.gz"
-          BUILD_DIR="native/ortex/target/${TARGET}/release"
+
+          # Build output location depends on whether --target was used.
+          # Native builds (cargo build --release) land in target/release/.
+          # Cross builds (cross build --release --target X) land in
+          # target/<X>/release/. The "Build NIF" step controls which.
+          if [ "${{ matrix.job.use-cross }}" = "true" ]; then
+            BUILD_DIR="native/ortex/target/${TARGET}/release"
+          else
+            BUILD_DIR="native/ortex/target/release"
+          fi
 
           mkdir -p pkg
           cd pkg
