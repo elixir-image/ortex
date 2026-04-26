@@ -37,8 +37,12 @@ defmodule Ortex.MixProject do
       # Rustler is required only for source-compiled builds (when
       # `ORTEX_BUILD=true` is set or no precompiled artifact exists for
       # the target). Made optional so consumers using precompiled NIFs
-      # don't need a Rust toolchain on PATH.
-      {:rustler, ">= 0.34.0", optional: true},
+      # don't need a Rust toolchain on PATH. Kept at the original
+      # `~> 0.27` constraint that the source-build path was tested
+      # against — bumping the floor showed no benefit and risked
+      # changing build-output paths in ways `Ortex.Util.copy_ort_libs/0`
+      # couldn't follow.
+      {:rustler, "~> 0.27", optional: true},
       {:rustler_precompiled, "~> 0.8"},
       {:nx, "~> 0.6"},
       {:tokenizers, "~> 0.4", only: :dev},
