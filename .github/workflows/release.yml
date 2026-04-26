@@ -90,6 +90,31 @@ jobs:
             cargo build --release --target "${{ matrix.job.target }}"
           fi
 
+      # Diagnostic: print every libonnxruntime / onnxruntime file in
+      # the workspace so we can verify what cargo + the ort crate
+      # actually produced for this target. This is *only* informational
+      # — the packaging step below globs for them based on platform
+      # convention, but if the crate stages them somewhere unusual
+      # we'll see it here. Remove once the layout is well-understood.
+      - name: Locate onnxruntime artifacts (diagnostic)
+        shell: bash
+        run: |
+          set +e
+          echo "=== onnxruntime files in workspace ==="
+          # Use -E to avoid breaking on weird filenames; size in bytes,
+          # and dereferenced size for symlinks (with %L). Fall back to
+          # plain ls if find -printf isn't available (e.g. Windows-bash).
+          if find --version >/dev/null 2>&1; then
+            find "$GITHUB_WORKSPACE" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) \
+              -printf '%p (%s bytes, type=%y)\n' 2>/dev/null
+          else
+            find "$GITHUB_WORKSPACE" \( -name 'libonnxruntime*' -o -name 'onnxruntime*' \) \
+              -exec ls -la {} \;
+          fi
+          echo
+          echo "=== build dir listing for the target ==="
+          ls -la "native/ortex/target/${{ matrix.job.target }}/release/" 2>&1 || true
+
       # Stage the right files into a tarball matching RustlerPrecompiled's
       # expected layout. Naming and contents follow the conventions in
       # rustler_precompiled.ex (lib_name_with_ext/2 + lib_prefix/1):
