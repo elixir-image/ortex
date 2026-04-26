@@ -37,6 +37,33 @@ defmodule Ortex.Native do
     force_build: System.get_env("ORTEX_BUILD") in ["1", "true"],
     nif_versions: ["2.16", "2.17"]
 
+  # Stage `libonnxruntime` next to the NIF when source-building. With
+  # some toolchains (notably the rustc that ships preinstalled on
+  # GitHub-hosted Ubuntu runners) the `ort` crate produces a NIF that
+  # dynamically links `libonnxruntime` and expects to find it via the
+  # NIF's rpath ($ORIGIN / @loader_path), i.e. in `priv/native/`. The
+  # helper finds the sidecar files in the cargo target dir and copies
+  # them across.
+  #
+  # Idempotent + harmless on the other paths:
+  #
+  #   * Precompiled artifact path: cargo wasn't invoked, so there's
+  #     no target dir, the helper finds nothing and is a no-op. The
+  #     prebuilt NIF tarball already contains whatever sidecars the
+  #     particular target needs.
+  #
+  #   * Static-link source build (e.g. release.yml's stable rustc):
+  #     cargo target dir exists but has no `libonnxruntime` files
+  #     because the runtime is linked directly into the NIF. Nothing
+  #     to copy. Helper is a no-op.
+  #
+  #   * Dynamic-link source build (e.g. ci.yml's runner-default
+  #     rustc): cargo target dir contains `libonnxruntime.so` (often
+  #     as symlinks into the ort cache). Helper resolves and copies
+  #     them. Without this step the NIF fails to load at runtime
+  #     with `libonnxruntime.so: cannot open shared object file`.
+  Ortex.Util.copy_ort_libs()
+
   # NIF dummies — required so calls compile cleanly before the NIF
   # is loaded. Real implementations are provided by the loaded NIF.
   def init(_model_path, _execution_providers, _optimization_level),
