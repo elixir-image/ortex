@@ -16,6 +16,13 @@ on:
       - "native/**"
       - ".github/workflows/release.yml"
 
+# softprops/action-gh-release creates the GitHub release on tag
+# pushes, which requires write access to repository contents. Since
+# 2023 the default GITHUB_TOKEN scope has been read-only, so the
+# permission must be granted explicitly.
+permissions:
+  contents: write
+
 jobs:
   build_release:
     name: NIF ${{ matrix.nif }} - ${{ matrix.job.target }} (${{ matrix.job.os }})
